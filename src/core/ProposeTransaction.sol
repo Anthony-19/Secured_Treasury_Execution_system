@@ -3,7 +3,6 @@ pragma solidity ^0.8.23;
 import {Treasury} from "src/core/Treasury.sol";
 import {ITimeLock} from "src/interfaces/ITimeLock.sol";
 import {Errors} from "src/libraries/Errors.sol";
-import "@openzeppelin/contracts/utils/cryptography/ECDSA.sol";
 import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 
 contract ProposeTransaction is ReentrancyGuard {
@@ -22,8 +21,6 @@ contract ProposeTransaction is ReentrancyGuard {
 
     struct Transaction {
         uint id;
-
-        uint nonce;
 
         uint value;
 
@@ -76,11 +73,12 @@ contract ProposeTransaction is ReentrancyGuard {
         _;
     }
 
-    constructor(uint _noOfSigners, uint _quorum, address[] memory _approver, address _timeLock) {
+    constructor(uint _noOfSigners, uint _quorum, address[] memory _approver, address _timeLock, address _treasury) {
         approvers = _approver;
         noOfSigners = _noOfSigners;
         quorum = _quorum;
         timeLock = ITimeLock(_timeLock);
+       treasury = Treasury(payable(_treasury));
     }
 
     function proposeTransaction (
@@ -88,13 +86,12 @@ contract ProposeTransaction is ReentrancyGuard {
         address _recipient,
         uint _amount
        
-    ) external payable{
+    ) external payable nonReentrant{
             require(msg.value == 1 ether, "Proposal fee is 1 ether");
            
         proposalCounts += 1;
         proposedTransactions[proposalCounts] = Transaction({
             id: proposalCounts,
-            nonce: proposalCounts,
             value: _value,
             recipient: _recipient,
             proposer: msg.sender,
@@ -113,23 +110,23 @@ contract ProposeTransaction is ReentrancyGuard {
         emit TransactionProposed(proposalCounts, msg.sender, _recipient, _value, _amount);
     }
 
-    function approveTransaction(uint _transactionId) external onlyApprovals{
+    function approveTransaction(uint _transactionId) external onlyApprovals payable{
         Transaction storage transaction = proposedTransactions[_transactionId];
 
         if (msg.value != 1 ether) revert Errors.InvalidProposalFee(msg.value);
 
-        if (transaction.proposalFee != 1 ether) revert ProposalFeeNotPaid();
+        if (transaction.proposalFee != 1 ether) revert Errors.ProposalFeeNotPaid();
 
-        if (transaction.proposer == msg.sender) revert ProposerCannotApprove();
+        if (transaction.proposer == msg.sender) revert Errors.ProposerCannotApprove();
 
-         if (transaction.queue) revert TransactionAlreadyQueued(_transactionId);
+         if (transaction.queue) revert Errors.TransactionAlreadyQueued(_transactionId);
 
-        if (transaction.executed) revert TransactionAlreadyExecuted(_transactionId);
+        if (transaction.executed) revert Errors.TransactionAlreadyExecuted(_transactionId);
 
-       if (transaction.cancelled) revert TransactionAlreadyCancelled(_transactionId);
+       if (transaction.cancelled) revert Errors.TransactionAlreadyCancelled(_transactionId);
 
       if (approvedTransactions[_transactionId][msg.sender]) {
-    revert TransactionAlreadyApproved(_transactionId, msg.sender);
+    revert Errors.TransactionAlreadyApproved(_transactionId, msg.sender);
 }
 
         approvedTransactions[_transactionId][msg.sender] = true;
@@ -145,14 +142,14 @@ contract ProposeTransaction is ReentrancyGuard {
     function execute(uint _transactionId) external{
          Transaction storage transaction = proposedTransactions[_transactionId];
 
-        if (!transaction.queue) revert TransactionNotQueued(_transactionId);
+        if (!transaction.queue) revert Errors.TransactionNotQueued(_transactionId);
 
-        if (transaction.executed) revert TransactionAlreadyExecuted(_transactionId);
+        if (transaction.executed) revert Errors.TransactionAlreadyExecuted(_transactionId);
 
-      if (transaction.cancelled) revert TransactionAlreadyCancelled(_transactionId);
+      if (transaction.cancelled) revert Errors.TransactionAlreadyCancelled(_transactionId);
 
         if (block.timestamp < transaction.stopTime) {
-    revert TimelockNotExpired(transaction.stopTime);
+    revert Errors.TimelockNotExpired(transaction.stopTime);
 }
 
         treasury.proposalWithdrawal(transaction.recipient, transaction.amount);
@@ -168,17 +165,17 @@ contract ProposeTransaction is ReentrancyGuard {
     function cancel(uint _transactionId) external onlyApprovals{
         Transaction storage transaction = proposedTransactions[_transactionId];
 
-        if (transaction.executed) revert TransactionAlreadyExecuted(_transactionId);
+        if (transaction.executed) revert Errors.TransactionAlreadyExecuted(_transactionId);
 
-        if (transaction.cancelled) revert TransactionAlreadyCancelled(_transactionId);
+        if (transaction.cancelled) revert Errors.TransactionAlreadyCancelled(_transactionId);
 
         transaction.cancelled = true;
 
         (bool success,) = payable(transaction.proposer).call{value: transaction.proposalFee}("");
 
-        if (!success) revert RefundFailed();
+        if (!success) revert Errors.RefundFailed();
 
-        delete proposedTransactions[_transactionId];
+        // delete proposedTransactions[_transactionId];
 
         emit TransactionCancelled(_transactionId);
 
