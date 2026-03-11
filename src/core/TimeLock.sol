@@ -1,11 +1,12 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.20;
+import {Errors} from "src/libraries/Errors.sol";
 
 contract TimeLock {
     uint public lockTime;
 
     function setLockTime(uint _lockTime) external {
-        require(_lockTime > 0, "Lock time must be greater than 0");
+        if (_lockTime == 0) revert Errors.InvalidLockTime(_lockTime);
         lockTime = _lockTime;
        
     }

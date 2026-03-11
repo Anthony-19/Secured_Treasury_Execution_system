@@ -1,16 +1,23 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.23;
-import {Treasury} from "src/Treasury.sol";
+import {Treasury} from "src/core/Treasury.sol";
 import {ITimeLock} from "src/interfaces/ITimeLock.sol";
+import {Errors} from "src/libraries/Errors.sol";
+import "@openzeppelin/contracts/utils/cryptography/ECDSA.sol";
+import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 
-contract ProposeTransaction {
+contract ProposeTransaction is ReentrancyGuard {
 
     Treasury public treasury;
+
     ITimeLock public timeLock;
 
     event  TransactionProposed(uint indexed proposalCounts, address indexed from, address _recipient, uint _value, uint _amount);
+
     event TransactionApproved(uint indexed transactionId, address indexed approver);
+
     event TransactionExecuted(uint indexed transactionId);
+
     event TransactionCancelled(uint indexed transactionId);
 
     struct Transaction {
@@ -55,7 +62,6 @@ contract ProposeTransaction {
 
     mapping (uint => mapping(address => bool)) public approvedTransactions;
    
-
     mapping(uint => Transaction) public proposedTransactions;
 
     modifier onlyApprovals {
@@ -66,7 +72,7 @@ contract ProposeTransaction {
                 break;
             }
         }
-        require(isApprover, "Sender is not an approver");
+       if (!isApprover) revert Errors.NotApprover(msg.sender);
         _;
     }
 
@@ -110,17 +116,21 @@ contract ProposeTransaction {
     function approveTransaction(uint _transactionId) external onlyApprovals{
         Transaction storage transaction = proposedTransactions[_transactionId];
 
-        require(transaction.proposalFee == 1 ether, "Pay up your proposal fee");
+        if (msg.value != 1 ether) revert Errors.InvalidProposalFee(msg.value);
 
-        require(transaction.proposer != msg.sender, "Proposer cannot approve their own transaction");
+        if (transaction.proposalFee != 1 ether) revert ProposalFeeNotPaid();
 
-        require(!transaction.queue, "Transaction already queued");
+        if (transaction.proposer == msg.sender) revert ProposerCannotApprove();
 
-        require(!transaction.executed, "Transaction already executed");
+         if (transaction.queue) revert TransactionAlreadyQueued(_transactionId);
 
-        require(!transaction.cancelled, "Transaction already cancelled");
+        if (transaction.executed) revert TransactionAlreadyExecuted(_transactionId);
 
-        require(!approvedTransactions[_transactionId][msg.sender], "Transaction already approved by this signer");
+       if (transaction.cancelled) revert TransactionAlreadyCancelled(_transactionId);
+
+      if (approvedTransactions[_transactionId][msg.sender]) {
+    revert TransactionAlreadyApproved(_transactionId, msg.sender);
+}
 
         approvedTransactions[_transactionId][msg.sender] = true;
 
@@ -135,19 +145,19 @@ contract ProposeTransaction {
     function execute(uint _transactionId) external{
          Transaction storage transaction = proposedTransactions[_transactionId];
 
-        require(transaction.queue, "Transaction not queued");
+        if (!transaction.queue) revert TransactionNotQueued(_transactionId);
 
-        require(!transaction.executed, "Already executed");
+        if (transaction.executed) revert TransactionAlreadyExecuted(_transactionId);
 
-        require(!transaction.cancelled, "Cancelled");
+      if (transaction.cancelled) revert TransactionAlreadyCancelled(_transactionId);
 
-        require(block.timestamp >= transaction.stopTime, "Timelock not passed");
+        if (block.timestamp < transaction.stopTime) {
+    revert TimelockNotExpired(transaction.stopTime);
+}
 
-        treasury.proposalWithdrawal(transaction.amount, transaction.recipient);
+        treasury.proposalWithdrawal(transaction.recipient, transaction.amount);
 
-        (bool success, ) = transaction.recipient.call{value: transaction.value}("");
 
-        require(success, "Execution failed");
 
         transaction.executed = true;
 
@@ -158,15 +168,15 @@ contract ProposeTransaction {
     function cancel(uint _transactionId) external onlyApprovals{
         Transaction storage transaction = proposedTransactions[_transactionId];
 
-        require(!transaction.executed, "Already executed");
+        if (transaction.executed) revert TransactionAlreadyExecuted(_transactionId);
 
-        require(!transaction.cancelled, "Already cancelled");
+        if (transaction.cancelled) revert TransactionAlreadyCancelled(_transactionId);
 
         transaction.cancelled = true;
 
         (bool success,) = payable(transaction.proposer).call{value: transaction.proposalFee}("");
 
-        require(success, "Refund failed");
+        if (!success) revert RefundFailed();
 
         delete proposedTransactions[_transactionId];
 
