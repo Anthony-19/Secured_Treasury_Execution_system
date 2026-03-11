@@ -22,6 +22,8 @@ contract ProposeTransaction is ReentrancyGuard {
     struct Transaction {
         uint id;
 
+        uint nonce;
+
         uint value;
 
         address recipient;
@@ -92,6 +94,7 @@ contract ProposeTransaction is ReentrancyGuard {
         proposalCounts += 1;
         proposedTransactions[proposalCounts] = Transaction({
             id: proposalCounts,
+            nonce: proposalCounts,
             value: _value,
             recipient: _recipient,
             proposer: msg.sender,
